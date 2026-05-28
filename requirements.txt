@@ -1,0 +1,2 @@
+# watchlog-ai currently uses only the Python standard library.
+

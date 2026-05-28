@@ -1,0 +1,18 @@
+[Unit]
+Description=watchlog-ai log watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/watchlog-ai
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/watchlog-ai/.venv/bin/python -m watchlog_ai --env-file /opt/watchlog-ai/.env
+Restart=always
+RestartSec=10
+User=watchlog-ai
+Group=watchlog-ai
+
+[Install]
+WantedBy=multi-user.target
+

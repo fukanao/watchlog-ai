@@ -1,0 +1,2 @@
+"""AI-powered log watcher."""
+
