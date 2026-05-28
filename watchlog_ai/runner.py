@@ -7,6 +7,7 @@ from typing import List
 
 from .ai import AnalysisResult, OllamaClient
 from .config import Config
+from .heuristics import analyze_failed_access_bursts
 from .log_reader import format_log_batch, read_new_logs
 from .notifier import NotificationResult, Notifier
 from .severity import Severity, max_severity
@@ -38,6 +39,7 @@ def run_once(config: Config) -> RunResult:
     for source_name, chunk in format_log_batch(logs, config.chunk_max_lines):
         LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
         analyses.append(client.analyze(source_name, chunk))
+    analyses.append(analyze_failed_access_bursts(logs))
 
     merged = merge_results(analyses)
     LOGGER.info("AI severity: %s", merged.severity.value)

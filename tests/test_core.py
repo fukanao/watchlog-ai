@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from watchlog_ai.ai import parse_analysis
+from watchlog_ai.heuristics import analyze_failed_access_bursts
 from watchlog_ai.log_reader import read_new_logs
 from watchlog_ai.severity import Severity
 from watchlog_ai.state import State
@@ -61,6 +62,31 @@ class LogReaderTest(unittest.TestCase):
                 handle.write("new\n")
             second = read_new_logs(log_dir, ["error.log"], state, start_at_end=True)
             self.assertEqual(second["error.log"], "new\n")
+
+
+class HeuristicsTest(unittest.TestCase):
+    def test_ten_consecutive_failed_suspicious_accesses_are_medium(self) -> None:
+        lines = [
+            '198.51.100.10 - - [28/May/2026:15:00:%02d +0900] "GET /.git/config%d HTTP/1.1" 404 207 "-" "curl/8.0"'
+            % (index, index)
+            for index in range(10)
+        ]
+
+        result = analyze_failed_access_bursts({"access.log": "\n".join(lines)})
+
+        self.assertEqual(result.severity, Severity.MEDIUM)
+        self.assertEqual(len(result.incidents), 1)
+
+    def test_nine_consecutive_failed_suspicious_accesses_are_not_escalated(self) -> None:
+        lines = [
+            '198.51.100.10 - - [28/May/2026:15:00:%02d +0900] "GET /.git/config%d HTTP/1.1" 404 207 "-" "curl/8.0"'
+            % (index, index)
+            for index in range(9)
+        ]
+
+        result = analyze_failed_access_bursts({"access.log": "\n".join(lines)})
+
+        self.assertEqual(result.severity, Severity.NONE)
 
 
 if __name__ == "__main__":

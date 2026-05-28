@@ -10,7 +10,7 @@ AI-powered log watcher for detecting suspicious activity in web server access an
 危険度の意味:
 
 - 高: いますぐ対応が必要。脆弱性を突かれた、または情報が漏洩した。
-- 中: 攻撃検知。回数が多い、または攻撃らしいが情報漏洩は確認できない。
+- 中: 攻撃検知。回数が多い、または攻撃らしいが情報漏洩は確認できない。同一IPから失敗した不正アクセスが10回以上連続した場合も中。
 - 低: スキャン程度。
 - 無: 正常アクセス。
 
@@ -27,17 +27,35 @@ python3 -m watchlog_ai --once
 ## Ubuntu への配置例
 
 ```bash
-sudo useradd --system --home /opt/watchlog-ai --shell /usr/sbin/nologin watchlog-ai
-sudo mkdir -p /opt/watchlog-ai
-sudo rsync -a ./ /opt/watchlog-ai/
+sudo apt update
+sudo apt install -y git python3 python3-venv
+
+id watchlog-ai >/dev/null 2>&1 || sudo useradd --system --home /opt/watchlog-ai --shell /usr/sbin/nologin watchlog-ai
+if [ -d /opt/watchlog-ai/.git ]; then
+  cd /opt/watchlog-ai
+  sudo -u watchlog-ai git pull
+else
+  sudo rm -rf /opt/watchlog-ai
+  sudo git clone https://github.com/fukanao/watchlog-ai.git /opt/watchlog-ai
+fi
 sudo chown -R watchlog-ai:watchlog-ai /opt/watchlog-ai
+
 sudo -u watchlog-ai python3 -m venv /opt/watchlog-ai/.venv
 sudo -u watchlog-ai /opt/watchlog-ai/.venv/bin/pip install -r /opt/watchlog-ai/requirements.txt
-sudo cp /opt/watchlog-ai/.env.example /opt/watchlog-ai/.env
+sudo test -f /opt/watchlog-ai/.env || sudo cp /opt/watchlog-ai/.env.example /opt/watchlog-ai/.env
 sudoedit /opt/watchlog-ai/.env
 sudo cp /opt/watchlog-ai/deploy/watchlog-ai.service /etc/systemd/system/watchlog-ai.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now watchlog-ai
+```
+
+更新するときは次のようにします。
+
+```bash
+cd /opt/watchlog-ai
+sudo -u watchlog-ai git pull
+sudo -u watchlog-ai /opt/watchlog-ai/.venv/bin/pip install -r /opt/watchlog-ai/requirements.txt
+sudo systemctl restart watchlog-ai
 ```
 
 本番では `.env` を次のように変更します。
@@ -74,6 +92,14 @@ sudo setfacl -m u:watchlog-ai:rX /var/log/znw-support-ai-flask
 
 ```bash
 python3 -m watchlog_ai --once
+```
+
+Ubuntu の `/opt/watchlog-ai` に配置した後は、サービスと同じ `watchlog-ai` ユーザーで実行します。
+`techsupport` など別ユーザーで直接実行すると、読み取り位置を保存する `.watchlog-ai-state.json.tmp` を作れず権限エラーになることがあります。
+
+```bash
+cd /opt/watchlog-ai
+sudo -u watchlog-ai /opt/watchlog-ai/.venv/bin/python -m watchlog_ai --once
 ```
 
 常駐実行:

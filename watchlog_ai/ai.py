@@ -85,6 +85,7 @@ class OllamaClient:
 判定では、HTTPメソッド、パス、ステータス、回数、同一IPからの連続性、エラートレースを重視してください。
 管理者の通常操作、/login, /chat, /ask, /stream の正常な 200/302 は原則「無」です。
 ただし、/.git/config, /wp-admin, /phpmyadmin, SQLi/XSS/RCE らしいパス、認証突破、機密ファイル探索、異常な大量アクセスは危険として扱ってください。
+攻撃が失敗していても、同一IPから不正アクセスが10回以上連続している場合は「中」と判定してください。
 
 JSON形式だけで返してください:
 {{
@@ -153,4 +154,3 @@ def _load_json_object(content: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise OllamaError("Ollama response JSON was not an object")
     return parsed
-
