@@ -48,7 +48,7 @@ class Severity(str, Enum):
 
     @property
     def should_notify(self) -> bool:
-        return self.score >= Severity.MEDIUM.score
+        return self.score >= Severity.LOW.score
 
 
 def max_severity(*values: Severity) -> Severity:
