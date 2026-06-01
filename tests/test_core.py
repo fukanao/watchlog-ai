@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from watchlog_ai.ai import parse_analysis
+from watchlog_ai.ai import format_analysis_for_debug, parse_analysis
 from watchlog_ai.heuristics import analyze_failed_access_bursts
 from watchlog_ai.log_reader import read_new_logs
 from watchlog_ai.severity import Severity
@@ -31,6 +31,23 @@ class AnalysisParsingTest(unittest.TestCase):
         self.assertTrue(Severity.MEDIUM.should_notify)
         self.assertFalse(Severity.LOW.should_notify)
         self.assertFalse(Severity.NONE.should_notify)
+
+    def test_debug_format_contains_readable_ai_result(self) -> None:
+        result = parse_analysis(
+            """
+            {
+              "severity": "low",
+              "summary": "スキャン程度",
+              "incidents": [{"severity": "low", "title": "/wp-admin", "summary": "探索", "evidence": ["404"], "recommended_actions": []}]
+            }
+            """
+        )
+
+        debug_text = format_analysis_for_debug("access.log", result)
+
+        self.assertIn('"source":"access.log"', debug_text)
+        self.assertIn('"severity":"low"', debug_text)
+        self.assertIn("スキャン程度", debug_text)
 
 
 class LogReaderTest(unittest.TestCase):

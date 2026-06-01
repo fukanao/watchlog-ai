@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -8,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from .severity import Severity
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,7 +73,9 @@ class OllamaClient:
 
         message = raw.get("message", {})
         content = message.get("content", "")
-        return parse_analysis(content)
+        result = parse_analysis(content)
+        LOGGER.info("Ollama AI analysis result: %s", format_analysis_for_debug(source_name, result))
+        return result
 
     @staticmethod
     def _build_prompt(source_name: str, log_text: str) -> str:
@@ -135,6 +141,30 @@ def parse_analysis(content: str) -> AnalysisResult:
         severity=severity,
         summary=str(data.get("summary", "")).strip()[:1000] or "AI判定の要約が空でした。",
         incidents=incidents,
+    )
+
+
+def format_analysis_for_debug(source_name: str, result: AnalysisResult) -> str:
+    return json.dumps(
+        {
+            "source": source_name,
+            "severity": result.severity.value,
+            "severity_label": result.severity.label_ja,
+            "summary": result.summary,
+            "incidents": [
+                {
+                    "severity": incident.severity.value,
+                    "severity_label": incident.severity.label_ja,
+                    "title": incident.title,
+                    "summary": incident.summary,
+                    "evidence": incident.evidence,
+                    "recommended_actions": incident.recommended_actions,
+                }
+                for incident in result.incidents
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
 
 
