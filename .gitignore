@@ -220,3 +220,4 @@ __marimo__/
 logs/
 .viminfo
 .lesshst
+.ssh/
