@@ -7,6 +7,7 @@ from pathlib import Path
 from watchlog_ai.ai import format_analysis_for_debug, parse_analysis
 from watchlog_ai.heuristics import analyze_failed_access_bursts
 from watchlog_ai.log_reader import read_new_logs
+from watchlog_ai.notifier import render_ollama_unreachable_message
 from watchlog_ai.severity import Severity
 from watchlog_ai.state import State
 
@@ -48,6 +49,27 @@ class AnalysisParsingTest(unittest.TestCase):
         self.assertIn('"source":"access.log"', debug_text)
         self.assertIn('"severity":"low"', debug_text)
         self.assertIn("スキャン程度", debug_text)
+
+
+class StatePersistenceTest(unittest.TestCase):
+    def test_preserves_ollama_unreachable_notification_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_path = Path(temp) / "state.json"
+            state = State(ollama_unreachable_notified_at=123.5)
+
+            state.save(state_path)
+            loaded = State.load(state_path)
+
+            self.assertEqual(loaded.ollama_unreachable_notified_at, 123.5)
+
+
+class NotifierMessageTest(unittest.TestCase):
+    def test_ollama_unreachable_message_contains_slack_heading(self) -> None:
+        message = render_ollama_unreachable_message("http://ollama:11434", "timed out")
+
+        self.assertIn("https://ft-chat.znw.co.jp watchlog-ai: Ollamaサーバー不達", message)
+        self.assertIn("接続先: http://ollama:11434", message)
+        self.assertIn("エラー: timed out", message)
 
 
 class LogReaderTest(unittest.TestCase):

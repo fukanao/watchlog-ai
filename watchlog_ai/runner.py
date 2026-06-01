@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import List
 
-from .ai import AnalysisResult, OllamaClient
+from .ai import AnalysisResult, OllamaClient, OllamaError
 from .config import Config
 from .heuristics import analyze_failed_access_bursts
 from .log_reader import format_log_batch, read_new_logs
@@ -15,6 +15,7 @@ from .state import State
 
 
 LOGGER = logging.getLogger(__name__)
+OLLAMA_UNREACHABLE_NOTIFY_INTERVAL_SECONDS = 3600
 
 
 @dataclass
@@ -26,7 +27,8 @@ class RunResult:
 
 
 def run_once(config: Config) -> RunResult:
-    state = State.load(config.state_file)
+    saved_state = State.load(config.state_file)
+    state = saved_state.clone()
     logs = read_new_logs(config.log_dir, config.log_files, state, start_at_end=config.start_at_end)
 
     if not logs:
@@ -36,9 +38,18 @@ def run_once(config: Config) -> RunResult:
 
     client = OllamaClient(config.ollama_url, config.ollama_model, config.ollama_timeout_seconds)
     analyses: List[AnalysisResult] = []
-    for source_name, chunk in format_log_batch(logs, config.chunk_max_lines):
-        LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
-        analyses.append(client.analyze(source_name, chunk))
+    try:
+        for source_name, chunk in format_log_batch(logs, config.chunk_max_lines):
+            LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
+            analyses.append(client.analyze(source_name, chunk))
+    except OllamaError as exc:
+        notification_results = _notify_ollama_unreachable(config, saved_state, exc)
+        return RunResult(
+            sorted(logs.keys()),
+            Severity.NONE,
+            any(item.ok for item in notification_results),
+            notification_results,
+        )
     analyses.append(analyze_failed_access_bursts(logs))
 
     merged = merge_results(analyses)
@@ -86,3 +97,26 @@ def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
         summary=" / ".join(summaries[:5]) or "新規ログを確認しました。",
         incidents=incidents,
     )
+
+
+def _notify_ollama_unreachable(config: Config, state: State, exc: OllamaError) -> List[NotificationResult]:
+    now = time.time()
+    last_notified_at = state.ollama_unreachable_notified_at
+    if last_notified_at is not None and now - last_notified_at < OLLAMA_UNREACHABLE_NOTIFY_INTERVAL_SECONDS:
+        LOGGER.error("Ollama is unreachable; Slack notification suppressed by 1-hour throttle: %s", exc)
+        return []
+
+    LOGGER.error("Ollama is unreachable; sending Slack notification: %s", exc)
+    notification_results = Notifier(config).notify_ollama_unreachable(str(exc))
+    for item in notification_results:
+        if item.ok:
+            LOGGER.info("Ollama unreachable notification sent via %s %s", item.channel, item.detail)
+        else:
+            LOGGER.error("Ollama unreachable notification failed via %s: %s", item.channel, item.detail)
+
+    if any(item.ok for item in notification_results):
+        state.ollama_unreachable_notified_at = now
+        state.save(config.state_file)
+    elif not notification_results:
+        LOGGER.error("Ollama is unreachable, but Slack webhook is not configured.")
+    return notification_results

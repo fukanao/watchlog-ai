@@ -4,6 +4,7 @@ import json
 import smtplib
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from email.message import EmailMessage
 from typing import Dict, List, Optional
 
@@ -47,6 +48,15 @@ class Notifier:
             results.append(self._send_email(title, text))
         return results
 
+    def notify_ollama_unreachable(self, error_detail: str) -> List[NotificationResult]:
+        text = render_ollama_unreachable_message(self.config.ollama_url, error_detail)
+        if self.config.dry_run:
+            print(text)
+            return [NotificationResult(channel="dry-run", ok=True)]
+        if not self.config.slack_webhook_url:
+            return []
+        return [_post_json("slack", self.config.slack_webhook_url, {"text": text})]
+
     def _send_email(self, subject: str, body: str) -> NotificationResult:
         if not self.config.smtp_host or not self.config.smtp_from or not self.config.smtp_to:
             return NotificationResult("email", False, "SMTP_HOST, SMTP_FROM, SMTP_TO are required")
@@ -69,9 +79,26 @@ class Notifier:
         return NotificationResult("email", True)
 
 
-def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
+def render_ollama_unreachable_message(ollama_url: str, error_detail: str) -> str:
     lines = [
-        f"*watchlog-ai: 危険度 {result.severity.label_ja}*",
+        f"日時: {_current_timestamp()}",
+        "https://ft-chat.znw.co.jp watchlog-ai: Ollamaサーバー不達",
+        "AI判定に失敗しました。Ollamaサーバーへ接続できません。",
+        f"接続先: {ollama_url}",
+        f"エラー: {error_detail}",
+        "対応: Ollamaサービス、ネットワーク疎通、待受ポートを確認してください。",
+    ]
+    return "\n".join(lines)
+
+
+def _current_timestamp() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
+
+def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
+    timestamp = _current_timestamp()
+    lines = [
+        f"日時: {timestamp}",
+        f"https://ft-chat.znw.co.jp watchlog-ai: 危険度 {result.severity.label_ja}",
         f"対象ログ: {', '.join(checked_files)}",
         f"要約: {result.summary}",
     ]

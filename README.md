@@ -85,6 +85,7 @@ sudo setfacl -m u:watchlog-ai:rX /var/log/znw-support-ai-flask
 - `LOG_DIR`: 監視対象ログのディレクトリ
 - `CHECK_INTERVAL_SECONDS`: 監視間隔。標準は `300`
 - `STATE_FILE`: 読み取り位置を保存するJSONファイル
+- Ollama に接続できない場合、`SLACK_WEBHOOK_URL` が設定されていれば最大 1 時間に 1 回 Slack へ不達通知を送ります。
 
 ## 実行コマンド
 
