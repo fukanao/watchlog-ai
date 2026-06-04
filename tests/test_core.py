@@ -4,10 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from watchlog_ai.ai import format_analysis_for_debug, parse_analysis
+from watchlog_ai.ai import AnalysisResult, Incident, format_analysis_for_debug, parse_analysis
 from watchlog_ai.heuristics import analyze_failed_access_bursts
 from watchlog_ai.log_reader import read_new_logs
-from watchlog_ai.notifier import render_ollama_unreachable_message
+from watchlog_ai.notifier import render_message, render_ollama_unreachable_message
+from watchlog_ai.runner import merge_results
 from watchlog_ai.severity import Severity
 from watchlog_ai.state import State
 
@@ -70,6 +71,57 @@ class NotifierMessageTest(unittest.TestCase):
         self.assertIn("https://ft-chat.znw.co.jp watchlog-ai: Ollamaサーバー不達", message)
         self.assertIn("接続先: http://ollama:11434", message)
         self.assertIn("エラー: timed out", message)
+
+    def test_render_message_keeps_incident_details_compact(self) -> None:
+        result = AnalysisResult(
+            Severity.LOW,
+            "GeoServer 管理画面へのスキャンが検出された",
+            [
+                Incident(
+                    Severity.LOW,
+                    "GeoServer 管理画面探索",
+                    "/geoserver/web/ へのアクセスが404で返されました。",
+                    ["line1", "line2"],
+                    ["対応1", "対応2"],
+                )
+            ],
+        )
+
+        message = render_message(result, ["access.log", "error.log"])
+
+        self.assertEqual(message.count("根拠:"), 1)
+        self.assertEqual(message.count("対応:"), 1)
+
+
+class ResultMergeTest(unittest.TestCase):
+    def test_merge_results_deduplicates_same_request_from_access_and_error_logs(self) -> None:
+        access_incident = Incident(
+            Severity.LOW,
+            "GeoServer 管理画面探索",
+            "/geoserver/web/ へのアクセスが 404 で返されました。",
+            [
+                '65.49.1.10 - - [04/Jun/2026:09:43:16 +0900] "GET /geoserver/web/ HTTP/1.1" 404 207 "-" "Mozilla/5.0"'
+            ],
+            ["該当 IP アドレスをファイアウォールでブロックまたはレートリミットを設定する"],
+        )
+        error_incident = Incident(
+            Severity.LOW,
+            "未知パスへのスキャン試行",
+            "/geoserver/web/ へのアクセスが 404 で返され、単発であるためスキャンとみなす。",
+            ["[2026-06-04 09:43:16,607] INFO in views: 65.49.1.10 - GET /geoserver/web/? 404"],
+            ["該当IPからの同様アクセスが増加した場合はブロックを検討"],
+        )
+
+        merged = merge_results(
+            [
+                AnalysisResult(Severity.LOW, "GeoServer 管理画面へのスキャンが検出された", [access_incident]),
+                AnalysisResult(Severity.LOW, "不審なパスへの単発アクセスを検出", [error_incident]),
+                AnalysisResult(Severity.NONE, "連続した不正アクセス失敗は検出されませんでした。", []),
+            ]
+        )
+
+        self.assertEqual(len(merged.incidents), 1)
+        self.assertEqual(merged.summary, "GeoServer 管理画面へのスキャンが検出された")
 
 
 class LogReaderTest(unittest.TestCase):

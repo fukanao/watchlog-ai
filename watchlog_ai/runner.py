@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import Iterable, List, Optional, Set, Tuple
 
 from .ai import AnalysisResult, OllamaClient, OllamaError
 from .config import Config
@@ -16,6 +17,14 @@ from .state import State
 
 LOGGER = logging.getLogger(__name__)
 OLLAMA_UNREACHABLE_NOTIFY_INTERVAL_SECONDS = 3600
+_COMBINED_REQUEST_RE = re.compile(
+    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3}).*"
+    r'"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+HTTP/[^"]+"\s+(?P<status>\d{3})'
+)
+_APP_REQUEST_RE = re.compile(
+    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s+-\s+"
+    r"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+(?P<status>\d{3})"
+)
 
 
 @dataclass
@@ -90,13 +99,58 @@ def run_forever(config: Config) -> None:
 
 def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
     severity = max_severity(*(result.severity for result in results))
-    incidents = [incident for result in results for incident in result.incidents]
-    summaries = [result.summary for result in results if result.summary]
+    incidents = _dedupe_incidents(incident for result in results for incident in result.incidents)
+    summary = next(
+        (
+            result.summary
+            for result in results
+            if result.severity == severity and result.severity != Severity.NONE and result.summary
+        ),
+        "",
+    )
     return AnalysisResult(
         severity=severity,
-        summary=" / ".join(summaries[:5]) or "新規ログを確認しました。",
+        summary=summary or "新規ログを確認しました。",
         incidents=incidents,
     )
+
+
+def _dedupe_incidents(incidents: Iterable[Incident]) -> List[Incident]:
+    deduped: List[Incident] = []
+    seen: Set[Tuple[str, ...]] = set()
+    for incident in incidents:
+        signature = _incident_signature(incident)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(incident)
+    return deduped
+
+
+def _incident_signature(incident: Incident) -> Tuple[str, ...]:
+    request_signature = _first_request_signature(incident.evidence)
+    if request_signature:
+        return (incident.severity.value, *request_signature)
+    return (
+        incident.severity.value,
+        "text",
+        _normalize_text(incident.title),
+        _normalize_text(incident.summary),
+    )
+
+
+def _first_request_signature(evidence: Iterable[str]) -> Optional[Tuple[str, ...]]:
+    for item in evidence:
+        match = _COMBINED_REQUEST_RE.search(item) or _APP_REQUEST_RE.search(item)
+        if not match:
+            continue
+        path = match.group("path").split("?", 1)[0]
+        return (match.group("ip"), match.group("method"), path, match.group("status"))
+    return None
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
 
 
 def _notify_ollama_unreachable(config: Config, state: State, exc: OllamaError) -> List[NotificationResult]:
