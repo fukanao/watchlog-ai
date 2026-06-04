@@ -4,9 +4,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from .ai import AnalysisResult, OllamaClient, OllamaError
+from .ai import AnalysisResult, Incident, OllamaClient, OllamaError
 from .config import Config
 from .heuristics import analyze_failed_access_bursts
 from .log_reader import format_log_batch, read_new_logs
@@ -99,7 +99,7 @@ def run_forever(config: Config) -> None:
 
 def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
     severity = max_severity(*(result.severity for result in results))
-    incidents = _dedupe_incidents(incident for result in results for incident in result.incidents)
+    incidents = _merge_incidents(incident for result in results for incident in result.incidents)
     summary = next(
         (
             result.summary
@@ -115,24 +115,42 @@ def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
     )
 
 
-def _dedupe_incidents(incidents: Iterable[Incident]) -> List[Incident]:
-    deduped: List[Incident] = []
-    seen: Set[Tuple[str, ...]] = set()
+def _merge_incidents(incidents: Iterable[Incident]) -> List[Incident]:
+    merged: Dict[Tuple[str, ...], Incident] = {}
+    counts: Dict[Tuple[str, ...], int] = {}
     for incident in incidents:
         signature = _incident_signature(incident)
-        if signature in seen:
+        if signature not in merged:
+            merged[signature] = Incident(
+                severity=incident.severity,
+                title=incident.title,
+                summary=incident.summary,
+                evidence=list(incident.evidence),
+                recommended_actions=list(incident.recommended_actions),
+            )
+            counts[signature] = 1
             continue
-        seen.add(signature)
-        deduped.append(incident)
-    return deduped
+        existing = merged[signature]
+        counts[signature] += 1
+        if incident.severity.score > existing.severity.score:
+            existing.severity = incident.severity
+        existing.evidence = _unique_limited([*existing.evidence, *incident.evidence], 5)
+        existing.recommended_actions = _unique_limited(
+            [*existing.recommended_actions, *incident.recommended_actions], 5
+        )
+
+    for signature, incident in merged.items():
+        count = counts[signature]
+        if count > 1:
+            incident.summary = f"{incident.summary} 同一内容の検知を{count}件にまとめています。"
+    return list(merged.values())
 
 
 def _incident_signature(incident: Incident) -> Tuple[str, ...]:
     request_signature = _first_request_signature(incident.evidence)
     if request_signature:
-        return (incident.severity.value, *request_signature)
+        return ("request", *request_signature)
     return (
-        incident.severity.value,
         "text",
         _normalize_text(incident.title),
         _normalize_text(incident.summary),
@@ -151,6 +169,20 @@ def _first_request_signature(evidence: Iterable[str]) -> Optional[Tuple[str, ...
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _unique_limited(values: Iterable[str], limit: int) -> List[str]:
+    results: List[str] = []
+    seen = set()
+    for value in values:
+        normalized = _normalize_text(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        results.append(value)
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _notify_ollama_unreachable(config: Config, state: State, exc: OllamaError) -> List[NotificationResult]:

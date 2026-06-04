@@ -104,10 +104,10 @@ def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
     ]
     for incident in result.incidents[:5]:
         lines.append("")
-        lines.append(f"- [{incident.severity.label_ja}] {incident.title or '検知'}")
-        for evidence in incident.evidence[:1]:
+        lines.append(f"- [{incident.severity.label_ja}] {incident.title or '検知'}: {incident.summary}")
+        for evidence in incident.evidence[:3]:
             lines.append(f"  根拠: `{evidence}`")
-        for action in incident.recommended_actions[:1]:
+        for action in incident.recommended_actions[:3]:
             lines.append(f"  対応: {action}")
     return "\n".join(lines)
 

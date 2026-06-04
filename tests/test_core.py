@@ -72,7 +72,7 @@ class NotifierMessageTest(unittest.TestCase):
         self.assertIn("接続先: http://ollama:11434", message)
         self.assertIn("エラー: timed out", message)
 
-    def test_render_message_keeps_incident_details_compact(self) -> None:
+    def test_render_message_keeps_incident_details_readable(self) -> None:
         result = AnalysisResult(
             Severity.LOW,
             "GeoServer 管理画面へのスキャンが検出された",
@@ -89,8 +89,9 @@ class NotifierMessageTest(unittest.TestCase):
 
         message = render_message(result, ["access.log", "error.log"])
 
-        self.assertEqual(message.count("根拠:"), 1)
-        self.assertEqual(message.count("対応:"), 1)
+        self.assertIn("- [低] GeoServer 管理画面探索: /geoserver/web/ へのアクセスが404で返されました。", message)
+        self.assertEqual(message.count("根拠:"), 2)
+        self.assertEqual(message.count("対応:"), 2)
 
 
 class ResultMergeTest(unittest.TestCase):
@@ -121,6 +122,9 @@ class ResultMergeTest(unittest.TestCase):
         )
 
         self.assertEqual(len(merged.incidents), 1)
+        self.assertEqual(len(merged.incidents[0].evidence), 2)
+        self.assertEqual(len(merged.incidents[0].recommended_actions), 2)
+        self.assertIn("同一内容の検知を2件にまとめています。", merged.incidents[0].summary)
         self.assertEqual(merged.summary, "GeoServer 管理画面へのスキャンが検出された")
 
 
