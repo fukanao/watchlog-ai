@@ -31,7 +31,7 @@ class AnalysisParsingTest(unittest.TestCase):
     def test_medium_and_high_severity_are_notifiable(self) -> None:
         self.assertTrue(Severity.HIGH.should_notify)
         self.assertTrue(Severity.MEDIUM.should_notify)
-        self.assertTrue(Severity.LOW.should_notify)
+        self.assertFalse(Severity.LOW.should_notify)
         self.assertFalse(Severity.NONE.should_notify)
 
     def test_debug_format_contains_readable_ai_result(self) -> None:
