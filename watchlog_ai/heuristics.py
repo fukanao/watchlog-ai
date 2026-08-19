@@ -56,7 +56,12 @@ def analyze_failed_access_bursts(logs: Dict[str, str], threshold: int = FAILED_A
         Severity.MEDIUM,
         "失敗していても、同一IPから10回以上連続した不正アクセスを検出したため危険度を中に引き上げました。",
         incidents,
+        source_names=_unique_source_names(incident.source_names for incident in incidents),
     )
+
+
+def _unique_source_names(groups: Iterable[List[str]]) -> List[str]:
+    return list(dict.fromkeys(source_name for group in groups for source_name in group))
 
 
 def _find_failed_access_bursts(source_name: str, requests: Iterable[LogRequest], threshold: int) -> List[Incident]:
@@ -80,6 +85,7 @@ def _find_failed_access_bursts(source_name: str, requests: Iterable[LogRequest],
                         "該当IPのアクセス頻度と直近のリクエスト内容を確認してください。",
                         "継続する場合はWAF、リバースプロキシ、ファイアウォールで制限してください。",
                     ],
+                    source_names=[source_name],
                 )
             )
 

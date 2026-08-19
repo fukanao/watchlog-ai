@@ -112,6 +112,15 @@ def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
         severity=severity,
         summary=summary or "新規ログを確認しました。",
         incidents=incidents,
+        source_names=_unique_limited(
+            (
+                source_name
+                for result in results
+                if result.severity != Severity.NONE
+                for source_name in result.source_names
+            ),
+            20,
+        ),
     )
 
 
@@ -127,6 +136,7 @@ def _merge_incidents(incidents: Iterable[Incident]) -> List[Incident]:
                 summary=incident.summary,
                 evidence=list(incident.evidence),
                 recommended_actions=list(incident.recommended_actions),
+                source_names=list(incident.source_names),
             )
             counts[signature] = 1
             continue
@@ -138,6 +148,7 @@ def _merge_incidents(incidents: Iterable[Incident]) -> List[Incident]:
         existing.recommended_actions = _unique_limited(
             [*existing.recommended_actions, *incident.recommended_actions], 5
         )
+        existing.source_names = _unique_limited([*existing.source_names, *incident.source_names], 20)
 
     for signature, incident in merged.items():
         count = counts[signature]

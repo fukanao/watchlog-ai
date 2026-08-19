@@ -93,6 +93,30 @@ class NotifierMessageTest(unittest.TestCase):
         self.assertEqual(message.count("根拠:"), 2)
         self.assertEqual(message.count("対応:"), 2)
 
+    def test_render_message_identifies_rejected_log_as_blocked_by_nginx(self) -> None:
+        source_name = "/var/log/nginx/znw-support-ai-rejected-access.log"
+        result = AnalysisResult(
+            Severity.MEDIUM,
+            "攻撃を検知",
+            [
+                Incident(
+                    Severity.MEDIUM,
+                    "不正アクセス",
+                    "危険なパスへのアクセスです。",
+                    ["request"],
+                    ["監視を継続する"],
+                    source_names=[source_name],
+                )
+            ],
+            source_names=[source_name],
+        )
+
+        message = render_message(result, [source_name, "access.log"])
+
+        self.assertIn("検知ログ: znw-support-ai-rejected-access.log", message)
+        self.assertIn("nginxのリバースプロキシで遮断済み", message)
+        self.assertIn("アプリケーションには到達していないため、原則問題ありません", message)
+
 
 class ResultMergeTest(unittest.TestCase):
     def test_merge_results_deduplicates_same_request_from_access_and_error_logs(self) -> None:
@@ -104,6 +128,7 @@ class ResultMergeTest(unittest.TestCase):
                 '65.49.1.10 - - [04/Jun/2026:09:43:16 +0900] "GET /geoserver/web/ HTTP/1.1" 404 207 "-" "Mozilla/5.0"'
             ],
             ["該当 IP アドレスをファイアウォールでブロックまたはレートリミットを設定する"],
+            source_names=["access.log"],
         )
         error_incident = Incident(
             Severity.LOW,
@@ -111,12 +136,23 @@ class ResultMergeTest(unittest.TestCase):
             "/geoserver/web/ へのアクセスが 404 で返され、単発であるためスキャンとみなす。",
             ["[2026-06-04 09:43:16,607] INFO in views: 65.49.1.10 - GET /geoserver/web/? 404"],
             ["該当IPからの同様アクセスが増加した場合はブロックを検討"],
+            source_names=["error.log"],
         )
 
         merged = merge_results(
             [
-                AnalysisResult(Severity.LOW, "GeoServer 管理画面へのスキャンが検出された", [access_incident]),
-                AnalysisResult(Severity.LOW, "不審なパスへの単発アクセスを検出", [error_incident]),
+                AnalysisResult(
+                    Severity.LOW,
+                    "GeoServer 管理画面へのスキャンが検出された",
+                    [access_incident],
+                    source_names=["access.log"],
+                ),
+                AnalysisResult(
+                    Severity.LOW,
+                    "不審なパスへの単発アクセスを検出",
+                    [error_incident],
+                    source_names=["error.log"],
+                ),
                 AnalysisResult(Severity.NONE, "連続した不正アクセス失敗は検出されませんでした。", []),
             ]
         )
@@ -124,6 +160,8 @@ class ResultMergeTest(unittest.TestCase):
         self.assertEqual(len(merged.incidents), 1)
         self.assertEqual(len(merged.incidents[0].evidence), 2)
         self.assertEqual(len(merged.incidents[0].recommended_actions), 2)
+        self.assertEqual(merged.incidents[0].source_names, ["access.log", "error.log"])
+        self.assertEqual(merged.source_names, ["access.log", "error.log"])
         self.assertIn("同一内容の検知を2件にまとめています。", merged.incidents[0].summary)
         self.assertEqual(merged.summary, "GeoServer 管理画面へのスキャンが検出された")
 

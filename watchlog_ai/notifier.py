@@ -6,6 +6,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .ai import AnalysisResult, Incident
@@ -96,15 +97,25 @@ def _current_timestamp() -> str:
 
 def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
     timestamp = _current_timestamp()
+    detected_logs = _display_log_names(result.source_names)
     lines = [
         f"日時: {timestamp}",
         f"https://ft-chat.znw.co.jp watchlog-ai: 危険度 {result.severity.label_ja}",
         f"対象ログ: {', '.join(checked_files)}",
+        f"検知ログ: {', '.join(detected_logs) if detected_logs else '特定できませんでした'}",
         f"要約: {result.summary}",
     ]
+    if _contains_rejected_access_log(result.source_names):
+        lines.append(
+            "補足: znw-support-ai-rejected-access.log に記録されたアクセスは、"
+            "nginxのリバースプロキシで遮断済みです。アプリケーションには到達していないため、原則問題ありません。"
+        )
     for incident in result.incidents[:5]:
         lines.append("")
         lines.append(f"- [{incident.severity.label_ja}] {incident.title or '検知'}: {incident.summary}")
+        incident_logs = _display_log_names(incident.source_names)
+        if incident_logs:
+            lines.append(f"  検知ログ: {', '.join(incident_logs)}")
         for evidence in incident.evidence[:3]:
             lines.append(f"  根拠: `{evidence}`")
         for action in incident.recommended_actions[:3]:
@@ -120,7 +131,23 @@ def _incident_payload(incident: Incident) -> Dict[str, object]:
         "summary": incident.summary,
         "evidence": incident.evidence,
         "recommended_actions": incident.recommended_actions,
+        "source_names": incident.source_names,
     }
+
+
+def _display_log_names(source_names: List[str]) -> List[str]:
+    return list(dict.fromkeys(_base_log_name(source_name) for source_name in source_names))
+
+
+def _contains_rejected_access_log(source_names: List[str]) -> bool:
+    return any(_base_log_name(source_name) == "znw-support-ai-rejected-access.log" for source_name in source_names)
+
+
+def _base_log_name(source_name: str) -> str:
+    base, separator, part = source_name.rpartition(" part ")
+    if separator and part.isdigit():
+        source_name = base
+    return Path(source_name).name
 
 
 def _post_json(channel: str, url: str, payload: Dict[str, object]) -> NotificationResult:

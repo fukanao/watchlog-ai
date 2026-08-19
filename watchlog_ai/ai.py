@@ -21,6 +21,7 @@ class Incident:
     summary: str
     evidence: List[str] = field(default_factory=list)
     recommended_actions: List[str] = field(default_factory=list)
+    source_names: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -28,6 +29,7 @@ class AnalysisResult:
     severity: Severity
     summary: str
     incidents: List[Incident] = field(default_factory=list)
+    source_names: List[str] = field(default_factory=list)
 
 
 class OllamaError(RuntimeError):
@@ -74,6 +76,9 @@ class OllamaClient:
         message = raw.get("message", {})
         content = message.get("content", "")
         result = parse_analysis(content)
+        result.source_names = [source_name]
+        for incident in result.incidents:
+            incident.source_names = [source_name]
         LOGGER.info("Ollama AI analysis result: %s", format_analysis_for_debug(source_name, result))
         return result
 
@@ -150,6 +155,7 @@ def format_analysis_for_debug(source_name: str, result: AnalysisResult) -> str:
             "severity": result.severity.value,
             "severity_label": result.severity.label_ja,
             "summary": result.summary,
+            "source_names": result.source_names,
             "incidents": [
                 {
                     "severity": incident.severity.value,
@@ -158,6 +164,7 @@ def format_analysis_for_debug(source_name: str, result: AnalysisResult) -> str:
                     "summary": incident.summary,
                     "evidence": incident.evidence,
                     "recommended_actions": incident.recommended_actions,
+                    "source_names": incident.source_names,
                 }
                 for incident in result.incidents
             ],
