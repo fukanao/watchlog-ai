@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from watchlog_ai.ai import AnalysisResult, Incident, format_analysis_for_debug, parse_analysis
+from watchlog_ai.ai import AnalysisResult, Incident, OllamaClient, format_analysis_for_debug, parse_analysis
 from watchlog_ai.heuristics import analyze_failed_access_bursts
 from watchlog_ai.log_reader import read_new_logs
 from watchlog_ai.notifier import render_message, render_ollama_unreachable_message
@@ -14,6 +14,14 @@ from watchlog_ai.state import State
 
 
 class AnalysisParsingTest(unittest.TestCase):
+    def test_prompt_treats_microsoft_mail_link_head_as_normal_only_with_expected_sequence(self) -> None:
+        prompt = OllamaClient._build_prompt("access.log", "sample log")
+
+        self.assertIn("104.47.0.0/17", prompt)
+        self.assertIn("正常なリンク検査", prompt)
+        self.assertIn("HEADのIPと利用者IPが異なるという理由だけ", prompt)
+        self.assertIn("Microsoft側IPからPOSTされた場合", prompt)
+
     def test_parse_japanese_severity(self) -> None:
         result = parse_analysis(
             """

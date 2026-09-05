@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from .ai import AnalysisResult, Incident
 from .config import Config
+from .rejected_access import report_label, is_rejected_access
 
 
 @dataclass
@@ -25,12 +26,12 @@ class Notifier:
         self.config = config
 
     def notify(self, result: AnalysisResult, checked_files: List[str]) -> List[NotificationResult]:
-        title = f"[watchlog-ai] 危険度 {result.severity.label_ja}: chatログ警告"
+        title = f"[watchlog-ai] 危険度 {report_label(result.severity, result.source_names)}: chatログ警告"
         text = render_message(result, checked_files)
         payload = {
             "title": title,
             "severity": result.severity.value,
-            "severity_label": result.severity.label_ja,
+            "severity_label": report_label(result.severity, result.source_names),
             "checked_files": checked_files,
             "summary": result.summary,
             "incidents": [_incident_payload(incident) for incident in result.incidents],
@@ -100,7 +101,7 @@ def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
     detected_logs = _display_log_names(result.source_names)
     lines = [
         f"日時: {timestamp}",
-        f"https://ft-chat.znw.co.jp watchlog-ai: 危険度 {result.severity.label_ja}",
+        f"https://ft-chat.znw.co.jp watchlog-ai: 危険度 {report_label(result.severity, result.source_names)}",
         f"対象ログ: {', '.join(checked_files)}",
         f"検知ログ: {', '.join(detected_logs) if detected_logs else '特定できませんでした'}",
         f"要約: {result.summary}",
@@ -112,7 +113,7 @@ def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
         )
     for incident in result.incidents[:5]:
         lines.append("")
-        lines.append(f"- [{incident.severity.label_ja}] {incident.title or '検知'}: {incident.summary}")
+        lines.append(f"- [{report_label(incident.severity, incident.source_names)}] {incident.title or '検知'}: {incident.summary}")
         incident_logs = _display_log_names(incident.source_names)
         if incident_logs:
             lines.append(f"  検知ログ: {', '.join(incident_logs)}")
@@ -126,7 +127,7 @@ def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
 def _incident_payload(incident: Incident) -> Dict[str, object]:
     return {
         "severity": incident.severity.value,
-        "severity_label": incident.severity.label_ja,
+        "severity_label": report_label(incident.severity, incident.source_names),
         "title": incident.title,
         "summary": incident.summary,
         "evidence": incident.evidence,
@@ -140,7 +141,7 @@ def _display_log_names(source_names: List[str]) -> List[str]:
 
 
 def _contains_rejected_access_log(source_names: List[str]) -> bool:
-    return any(_base_log_name(source_name) == "znw-support-ai-rejected-access.log" for source_name in source_names)
+    return any(is_rejected_access(source_name) for source_name in source_names)
 
 
 def _base_log_name(source_name: str) -> str:

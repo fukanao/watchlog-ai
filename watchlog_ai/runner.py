@@ -13,6 +13,7 @@ from .log_reader import format_log_batch, read_new_logs
 from .notifier import NotificationResult, Notifier
 from .severity import Severity, max_severity
 from .state import State
+from .rejected_access import apply_source_policy, should_report, is_rejected_access
 
 
 LOGGER = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def run_once(config: Config) -> RunResult:
     try:
         for source_name, chunk in format_log_batch(logs, config.chunk_max_lines):
             LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
-            analyses.append(client.analyze(source_name, chunk))
+            analyses.append(apply_source_policy(client.analyze(source_name, chunk), source_name))
     except OllamaError as exc:
         notification_results = _notify_ollama_unreachable(config, saved_state, exc)
         return RunResult(
@@ -59,11 +60,12 @@ def run_once(config: Config) -> RunResult:
             any(item.ok for item in notification_results),
             notification_results,
         )
-    analyses.append(analyze_failed_access_bursts(logs))
+    for source_name, log_text in logs.items():
+        analyses.append(apply_source_policy(analyze_failed_access_bursts({source_name: log_text}), source_name))
 
     merged = merge_results(analyses)
     LOGGER.info("AI severity: %s", merged.severity.value)
-    if not merged.severity.should_notify:
+    if not should_report(merged):
         state.save(config.state_file)
         return RunResult(sorted(logs.keys()), merged.severity, False, [])
 
@@ -128,7 +130,8 @@ def _merge_incidents(incidents: Iterable[Incident]) -> List[Incident]:
     merged: Dict[Tuple[str, ...], Incident] = {}
     counts: Dict[Tuple[str, ...], int] = {}
     for incident in incidents:
-        signature = _incident_signature(incident)
+        blocked = bool(incident.source_names) and all(is_rejected_access(name) for name in incident.source_names)
+        signature = (str(blocked), *_incident_signature(incident))
         if signature not in merged:
             merged[signature] = Incident(
                 severity=incident.severity,

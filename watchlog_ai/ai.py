@@ -97,6 +97,17 @@ class OllamaClient:
 管理者の通常操作、/login, /chat, /ask, /stream の正常な 200/302 は原則「無」です。
 ただし、/.git/config, /wp-admin, /phpmyadmin, SQLi/XSS/RCE らしいパス、認証突破、機密ファイル探索、異常な大量アクセスは危険として扱ってください。
 
+パスワードリセットURLのメールセキュリティ検査:
+- /reset_password/<token> へのHEADは、メールサービスがリンクの安全性を確認するために発生することがあります。
+- 104.47.0.0/17（104.47.0.0〜104.47.127.255）はMicrosoft 365のメールセキュリティ基盤として扱ってください。
+- 次をすべて満たす場合は、トークン横取りや漏洩ではなく正常なリンク検査として、危険度を「無」、incidentsを空にしてください。
+  1. 104.47.0.0/17からのアクセスがHEADだけで、同IPからPOSTされていない。
+  2. 利用者IPから直前に/reset_password_requestへのGET/POSTがある。
+  3. Microsoft側のHEAD直後に、利用者IPが同じリセットURLをGET/POSTしている。
+  4. その後、同じ利用者IPで/login、/two_factor、/consent、/chatなどの通常操作が続いている。
+- HEADのIPと利用者IPが異なるという理由だけで、トークン横取りや漏洩と判定しないでください。
+- Microsoft側IPからPOSTされた場合、Microsoft範囲外の第三者IPが同じトークンを利用した場合、利用者の操作と対応しない場合、または不審な認証・アカウント操作が続く場合は危険として再評価してください。
+
 JSON形式だけで返してください:
 {{
   "severity": "high|medium|low|none",
