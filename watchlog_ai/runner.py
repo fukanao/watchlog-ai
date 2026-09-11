@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .ai import AnalysisResult, Incident, OllamaClient, OllamaError
 from .config import Config
+from .daily_report import DailyReport, JST, next_report_at
 from .heuristics import analyze_failed_access_bursts
 from .log_reader import format_log_batch, read_new_logs
 from .notifier import NotificationResult, Notifier
@@ -38,13 +40,14 @@ class RunResult:
 
 def run_once(config: Config) -> RunResult:
     saved_state = State.load(config.state_file)
+    daily_results = _notify_daily_report(config, saved_state)
     state = saved_state.clone()
     logs = read_new_logs(config.log_dir, config.log_files, state, start_at_end=config.start_at_end)
 
     if not logs:
         state.save(config.state_file)
         LOGGER.info("No new log entries.")
-        return RunResult([], Severity.NONE, False, [])
+        return RunResult([], Severity.NONE, any(item.ok for item in daily_results), daily_results)
 
     client = OllamaClient(config.ollama_url, config.ollama_model, config.ollama_timeout_seconds)
     analyses: List[AnalysisResult] = []
@@ -53,7 +56,7 @@ def run_once(config: Config) -> RunResult:
             LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
             analyses.append(apply_source_policy(client.analyze(source_name, chunk), source_name))
     except OllamaError as exc:
-        notification_results = _notify_ollama_unreachable(config, saved_state, exc)
+        notification_results = daily_results + _notify_ollama_unreachable(config, saved_state, exc)
         return RunResult(
             sorted(logs.keys()),
             Severity.NONE,
@@ -63,13 +66,32 @@ def run_once(config: Config) -> RunResult:
     for source_name, log_text in logs.items():
         analyses.append(apply_source_policy(analyze_failed_access_bursts({source_name: log_text}), source_name))
 
+    now = time.time()
+    if config.slack_webhook_url or config.dry_run:
+        for analysis in analyses:
+            low = analysis
+            if analysis.severity.should_notify:
+                incidents = [item for item in analysis.incidents if item.severity == Severity.LOW]
+                if not incidents:
+                    continue
+                low = replace(analysis, severity=Severity.LOW, incidents=incidents,
+                              summary=" / ".join(item.summary for item in incidents))
+            if low.severity == Severity.LOW:
+                if state.daily_report is None:
+                    state.daily_report = DailyReport(next_report_at(now), now, now)
+                state.daily_report.add(low, now)
+
     merged = merge_results(analyses)
     LOGGER.info("AI severity: %s", merged.severity.value)
     if not should_report(merged):
         state.save(config.state_file)
-        return RunResult(sorted(logs.keys()), merged.severity, False, [])
+        return RunResult(sorted(logs.keys()), merged.severity, any(item.ok for item in daily_results), daily_results)
 
-    notification_results = Notifier(config).notify(merged, sorted(logs.keys()))
+    immediate = merge_results([
+        replace(analysis, incidents=[item for item in analysis.incidents if item.severity.should_notify])
+        for analysis in analyses if analysis.severity.should_notify
+    ])
+    notification_results = Notifier(config).notify(merged, sorted(logs.keys()), slack_result=immediate)
     for item in notification_results:
         if item.ok:
             LOGGER.info("Notification sent via %s %s", item.channel, item.detail)
@@ -81,6 +103,7 @@ def run_once(config: Config) -> RunResult:
     else:
         LOGGER.error("All notification channels failed; keeping log offsets for retry.")
 
+    notification_results = daily_results + notification_results
     return RunResult(
         sorted(logs.keys()),
         merged.severity,
@@ -89,14 +112,36 @@ def run_once(config: Config) -> RunResult:
     )
 
 
+def _notify_daily_report(config: Config, state: State) -> List[NotificationResult]:
+    now = time.time()
+    today = datetime.fromtimestamp(now, JST).date().isoformat()
+    report = state.daily_report
+    if report is None or now < report.due_at or state.daily_report_sent_on == today:
+        return []
+    results = Notifier(config).notify_daily_report(report)
+    if any(item.ok for item in results):
+        state.daily_report = None
+        state.daily_report_sent_on = today
+        state.save(config.state_file)
+        LOGGER.info("Daily low-priority Slack report sent (%d analyses).", report.count)
+    else:
+        LOGGER.error("Daily Slack report failed; retaining pending report for retry.")
+    return results
+
+
 def run_forever(config: Config) -> None:
     LOGGER.info("Starting watchlog-ai. interval=%ss log_dir=%s", config.check_interval_seconds, config.log_dir)
     while True:
         try:
+            daily_deadline = next_report_at(time.time())
             run_once(config)
+            # Analysis may finish after the 09:00 deadline.
+            if time.time() >= daily_deadline:
+                _notify_daily_report(config, State.load(config.state_file))
         except Exception:
             LOGGER.exception("watchlog-ai cycle failed")
-        time.sleep(config.check_interval_seconds)
+        now = time.time()
+        time.sleep(min(config.check_interval_seconds, max(0.1, next_report_at(now) - now)))
 
 
 def merge_results(results: List[AnalysisResult]) -> AnalysisResult:

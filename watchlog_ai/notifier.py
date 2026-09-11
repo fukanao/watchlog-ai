@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from .ai import AnalysisResult, Incident
 from .config import Config
+from .daily_report import DailyReport, render_daily_report
 from .rejected_access import report_label, is_rejected_access
 
 
@@ -25,7 +26,10 @@ class Notifier:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-    def notify(self, result: AnalysisResult, checked_files: List[str]) -> List[NotificationResult]:
+    def notify(
+        self, result: AnalysisResult, checked_files: List[str],
+        *, slack_result: Optional[AnalysisResult] = None,
+    ) -> List[NotificationResult]:
         title = f"[watchlog-ai] 危険度 {report_label(result.severity, result.source_names)}: chatログ警告"
         text = render_message(result, checked_files)
         payload = {
@@ -37,18 +41,31 @@ class Notifier:
             "incidents": [_incident_payload(incident) for incident in result.incidents],
         }
 
+        slack_result = slack_result or result
+        slack_text = render_message(slack_result, checked_files) if slack_result.severity.should_notify else None
         if self.config.dry_run:
-            print(text)
+            if not slack_text and not (self.config.raspi_webhook_url or self.config.email_enabled):
+                return []
+            print(slack_text or text)
             return [NotificationResult(channel="dry-run", ok=True)]
 
         results: List[NotificationResult] = []
-        if self.config.slack_webhook_url:
-            results.append(_post_json("slack", self.config.slack_webhook_url, {"text": text}))
+        if self.config.slack_webhook_url and slack_text:
+            results.append(_post_json("slack", self.config.slack_webhook_url, {"text": slack_text}))
         if self.config.raspi_webhook_url:
             results.append(_post_json("raspi", self.config.raspi_webhook_url, payload))
         if self.config.email_enabled:
             results.append(self._send_email(title, text))
         return results
+
+    def notify_daily_report(self, report: DailyReport) -> List[NotificationResult]:
+        text = render_daily_report(report)
+        if self.config.dry_run:
+            print(text)
+            return [NotificationResult(channel="dry-run", ok=True)]
+        if not self.config.slack_webhook_url:
+            return []
+        return [_post_json("slack", self.config.slack_webhook_url, {"text": text})]
 
     def notify_ollama_unreachable(self, error_detail: str) -> List[NotificationResult]:
         text = render_ollama_unreachable_message(self.config.ollama_url, error_detail)
