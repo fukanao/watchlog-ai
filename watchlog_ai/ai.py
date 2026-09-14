@@ -30,6 +30,7 @@ class AnalysisResult:
     summary: str
     incidents: List[Incident] = field(default_factory=list)
     source_names: List[str] = field(default_factory=list)
+    source_ips: List[str] = field(default_factory=list)
 
 
 class OllamaError(RuntimeError):

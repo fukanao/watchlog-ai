@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from .ai import AnalysisResult, Incident, OllamaClient, OllamaError
 from .config import Config
-from .daily_report import DailyReport, JST, next_report_at
+from .daily_report import DailyReport, JST, extract_source_ips, next_report_at
 from .heuristics import analyze_failed_access_bursts
 from .log_reader import format_log_batch, read_new_logs
 from .notifier import NotificationResult, Notifier
@@ -54,7 +54,8 @@ def run_once(config: Config) -> RunResult:
     try:
         for source_name, chunk in format_log_batch(logs, config.chunk_max_lines):
             LOGGER.info("Analyzing %s (%d chars)", source_name, len(chunk))
-            analyses.append(apply_source_policy(client.analyze(source_name, chunk), source_name))
+            analysis = apply_source_policy(client.analyze(source_name, chunk), source_name)
+            analyses.append(replace(analysis, source_ips=extract_source_ips(chunk)))
     except OllamaError as exc:
         notification_results = daily_results + _notify_ollama_unreachable(config, saved_state, exc)
         return RunResult(
@@ -64,7 +65,8 @@ def run_once(config: Config) -> RunResult:
             notification_results,
         )
     for source_name, log_text in logs.items():
-        analyses.append(apply_source_policy(analyze_failed_access_bursts({source_name: log_text}), source_name))
+        analysis = apply_source_policy(analyze_failed_access_bursts({source_name: log_text}), source_name)
+        analyses.append(replace(analysis, source_ips=extract_source_ips(log_text)))
 
     now = time.time()
     if config.slack_webhook_url or config.dry_run:

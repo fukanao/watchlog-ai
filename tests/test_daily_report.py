@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -7,7 +8,7 @@ from unittest.mock import patch
 
 from watchlog_ai.ai import AnalysisResult, Incident, OllamaError
 from watchlog_ai.config import Config
-from watchlog_ai.daily_report import DailyReport, JST, MAX_SAMPLES, next_report_at, render_daily_report
+from watchlog_ai.daily_report import DailyReport, JST, MAX_SAMPLES, MAX_SOURCE_IPS, extract_source_ips, next_report_at, render_daily_report
 from watchlog_ai.notifier import NotificationResult
 from watchlog_ai.runner import run_forever, run_once
 from watchlog_ai.severity import Severity
@@ -74,6 +75,44 @@ class DailyReportTest(unittest.TestCase):
         self.now.return_value = at("2026-09-12T09:00")
         run_once(self.config)
         self.assertEqual(self.post.call_count, 2)
+
+    def test_source_ips_survive_restart_and_appear_in_nine_am_report(self):
+        self.config = replace(self.config, chunk_max_lines=1)
+        (self.root / "rejected-access.log").write_text(
+            '198.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET /.env HTTP/1.1" 444 0\n'
+            '2001:db8::1 - - [11/Sep/2026:08:00:01 +0900] "GET /.git HTTP/1.1" 444 0\n'
+        )
+        run_once(self.config)
+        samples = self.pending().samples
+        self.assertEqual(samples[0]["source_ips"], ["198.51.100.10"])
+        self.assertEqual(samples[1]["source_ips"], ["2001:db8::1"])
+        self.assertEqual(samples[1]["sources"], ["rejected-access.log part 2"])
+        self.now.return_value = at("2026-09-11T09:00")
+        run_once(self.config)
+        message = self.post.call_args.args[2]["text"]
+        self.assertIn("アクセス元IP（解析対象ログ内）: 198.51.100.10", message)
+        self.assertIn("アクセス元IP（解析対象ログ内）: 2001:db8::1", message)
+        self.assertIsNone(self.pending())
+
+    def test_mixed_severities_keep_log_client_ips_in_daily_report(self):
+        self.analyze.side_effect = None
+        self.analyze.return_value = AnalysisResult(Severity.MEDIUM, "攻撃", [
+            Incident(Severity.MEDIUM, "攻撃", "要確認"), Incident(Severity.LOW, "探索", "低い危険度")])
+        (self.root / "access.log").write_text(
+            '[2026-09-11 08:00:00] INFO in views: 198.51.100.10 - GET /.env 404\n'
+        )
+        run_once(self.config)
+        self.assertEqual(self.pending().samples[0]["source_ips"], ["198.51.100.10"])
+
+    def test_blocked_burst_client_ips_are_saved_when_ai_reports_none(self):
+        self.analyze.side_effect = None
+        self.analyze.return_value = AnalysisResult(Severity.NONE, "正常")
+        (self.root / "rejected-access.log").write_text(
+            '198.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET /.env HTTP/1.1" 444 0\n' * 10
+        )
+        run_once(self.config)
+        self.assertEqual(self.pending().count, 1)
+        self.assertEqual(self.pending().samples[0]["source_ips"], ["198.51.100.10"])
 
     def test_first_detection_after_nine_waits_until_next_day(self):
         self.now.return_value = at("2026-09-11T10:00")
@@ -248,6 +287,37 @@ class DailyReportStorageTest(unittest.TestCase):
         self.assertEqual(report.samples[0]["count"], 2)
         self.assertIn("その他: 5件", render_daily_report(report))
 
+    def test_source_ips_merge_without_duplicates_and_are_bounded(self):
+        report = DailyReport(0, 0, 0)
+        report.add(AnalysisResult(Severity.LOW, "探索", source_ips=["198.51.100.1"]), 1)
+        report.add(AnalysisResult(Severity.LOW, "探索", source_ips=["198.51.100.1", "2001:db8::1"]), 2)
+        self.assertEqual(report.samples[0]["source_ips"], ["198.51.100.1", "2001:db8::1"])
+        self.assertFalse(report.samples[0]["source_ips_truncated"])
+        report.add(AnalysisResult(Severity.LOW, "探索", source_ips=[
+            f"198.51.100.{i}" for i in range(2, MAX_SOURCE_IPS + 2)]), 3)
+        report.add(AnalysisResult(Severity.LOW, "探索", source_ips=["198.51.100.1"]), 4)
+        self.assertEqual(report.samples[0]["count"], 4)
+        self.assertEqual(len(report.samples[0]["source_ips"]), MAX_SOURCE_IPS)
+        self.assertTrue(report.samples[0]["source_ips_truncated"])
+        self.assertIn("ほか（最大20件まで表示）", render_daily_report(report))
+
+    def test_old_pending_samples_without_ips_load_render_and_merge(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            path.write_text(json.dumps({"daily_report": {
+                "due_at": 10, "first_at": 1, "last_at": 1, "count": 1,
+                "samples": [{"summary": "探索", "sources": [], "count": 1}],
+            }}))
+            state = State.load(path)
+            self.assertIn("不明（IP情報なし）", render_daily_report(state.daily_report))
+            clone = state.clone()
+            clone.daily_report.add(AnalysisResult(Severity.LOW, "探索", source_ips=["2001:db8::1"]), 2)
+            self.assertNotIn("source_ips", state.daily_report.samples[0])
+            clone.save(path)
+            loaded = State.load(path).daily_report
+            self.assertEqual(loaded.samples[0]["count"], 2)
+            self.assertIn("アクセス元IP（解析対象ログ内）: 2001:db8::1", render_daily_report(loaded))
+
     def test_old_state_loads_and_clone_does_not_mutate_pending_report(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "state.json"
@@ -265,6 +335,31 @@ class DailyReportStorageTest(unittest.TestCase):
             self.assertEqual(clone.daily_report.count, 2)
             self.assertEqual(clone.daily_report_sent_on, state.daily_report_sent_on)
             self.assertEqual(clone.files["access.log"].offset, 50)
+
+
+class SourceIPExtractionTest(unittest.TestCase):
+    def test_access_app_and_error_client_fields_with_ipv4_and_ipv6(self):
+        logs = '\n'.join([
+            '198.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET / HTTP/1.1" 200 0',
+            '2001:0db8:0:0:0:0:0:1 - - [11/Sep/2026:08:00:00 +0900] "GET / HTTP/2.0" 200 0',
+            '[2026-09-11 08:00:00] INFO in views: 198.51.100.20 - GET /login 404',
+            '[2026-09-11 08:00:00] INFO in views: ::1 - POST /login 403',
+            '2026/09/11 08:00:00 [error] 123#123: *1 failed, client: 2001:db8::2, server: example.test',
+            '2026/09/11 08:00:00 [error] 123#123: *1 failed, client: 198.51.100.30, server: example.test',
+            '2001:db8::1 - - [11/Sep/2026:08:00:00 +0900] "GET / HTTP/1.1" 200 0',
+        ])
+        self.assertEqual(extract_source_ips(logs), [
+            "198.51.100.10", "2001:db8::1", "198.51.100.20", "::1", "2001:db8::2", "198.51.100.30"])
+
+    def test_invalid_ips_and_non_client_fields_are_ignored(self):
+        logs = '\n'.join([
+            '999.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET / HTTP/1.1" 444 0',
+            '198.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET /203.0.113.1 HTTP/1.1" 444 0 "-" "203.0.113.2"',
+            '2026/09/11 08:00:00 [error] failed, client: 2001:db8::2, upstream: "http://127.0.0.1:8000/"',
+            'Connection failed to upstream 203.0.113.3',
+            'probe',
+        ])
+        self.assertEqual(extract_source_ips(logs), ["198.51.100.10", "2001:db8::2"])
 
 
 if __name__ == "__main__":
