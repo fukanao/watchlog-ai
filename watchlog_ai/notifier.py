@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from .ai import AnalysisResult, Incident
 from .config import Config
-from .daily_report import DailyReport, render_daily_report
+from .daily_report import DailyReport, extract_source_ips, render_daily_report
 from .rejected_access import report_label, is_rejected_access
 
 
@@ -123,6 +123,13 @@ def render_message(result: AnalysisResult, checked_files: List[str]) -> str:
         f"検知ログ: {', '.join(detected_logs) if detected_logs else '特定できませんでした'}",
         f"要約: {result.summary}",
     ]
+    attack_ips = extract_source_ips("\n".join(
+        evidence for incident in result.incidents for evidence in incident.evidence
+    ))
+    lines.append(f"攻撃元IP（検知根拠）: {', '.join(attack_ips) if attack_ips else '不明（根拠にIP情報なし）'}")
+    if not attack_ips and result.source_ips:
+        lines.append(f"アクセス元IP（解析対象ログ内）: {', '.join(result.source_ips)}")
+        lines.append("補足: 解析対象ログ内のIPには正常アクセスも含まれるため、攻撃元とは限りません。")
     if _contains_rejected_access_log(result.source_names):
         lines.append(
             "補足: znw-support-ai-rejected-access.log に記録されたアクセスは、"

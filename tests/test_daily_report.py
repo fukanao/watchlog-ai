@@ -145,7 +145,58 @@ class DailyReportTest(unittest.TestCase):
         self.append("access.log")
         self.assertTrue(run_once(self.config).notified)
         self.assertIn("危険度 中", self.post.call_args.args[2]["text"])
+        self.assertIn("攻撃元IP（検知根拠）: 不明（根拠にIP情報なし）", self.post.call_args.args[2]["text"])
         self.assertIsNone(self.pending())
+
+    def test_medium_notification_keeps_client_ips_across_chunks_without_evidence(self):
+        self.config = replace(self.config, chunk_max_lines=1)
+        self.analyze.side_effect = lambda source, chunk: AnalysisResult(
+            Severity.NONE if '"GET / HTTP' in chunk else Severity.MEDIUM, "判定")
+        (self.root / "access.log").write_text(
+            '198.51.100.10 - - [11/Sep/2026:08:00:00 +0900] "GET /.env HTTP/1.1" 404 0\n'
+            '2001:db8::1 - - [11/Sep/2026:08:00:01 +0900] "GET /.git HTTP/1.1" 404 0\n'
+            '198.51.100.10 - - [11/Sep/2026:08:00:02 +0900] "GET /.env HTTP/1.1" 404 0\n'
+            '203.0.113.20 - - [11/Sep/2026:08:00:03 +0900] "GET / HTTP/1.1" 200 0\n'
+        )
+        self.assertTrue(run_once(self.config).notified)
+        message = self.post.call_args.args[2]["text"]
+        self.assertIn("アクセス元IP（解析対象ログ内）: 198.51.100.10, 2001:db8::1", message)
+        self.assertEqual(message.count("198.51.100.10"), 1)
+        self.assertNotIn("203.0.113.20", message)
+        self.assertIn("攻撃元とは限りません", message)
+
+    def test_immediate_notification_uses_attack_evidence_not_normal_or_low_clients(self):
+        attack = '2001:db8::1 - - [11/Sep/2026:08:00:00 +0900] "GET /.env HTTP/1.1" 403 0'
+        low = '198.51.100.20 - - [11/Sep/2026:08:00:01 +0900] "GET /wp-admin HTTP/1.1" 404 0'
+        normal = '203.0.113.20 - - [11/Sep/2026:08:00:02 +0900] "GET / HTTP/1.1" 200 0'
+        self.analyze.side_effect = None
+        (self.root / "access.log").write_text("\n".join([attack, low, normal]) + "\n")
+        for severity in (Severity.MEDIUM, Severity.HIGH):
+            with self.subTest(severity=severity):
+                self.analyze.return_value = AnalysisResult(severity, "攻撃", [
+                    Incident(severity, "攻撃", "要確認", evidence=[attack]),
+                    Incident(Severity.LOW, "探索", "低い危険度", evidence=[low]),
+                ])
+                with (self.root / "access.log").open("a") as handle:
+                    handle.write(attack + "\n")
+                self.assertTrue(run_once(self.config).notified)
+                message = self.post.call_args.args[2]["text"]
+                self.assertIn("攻撃元IP（検知根拠）: 2001:db8::1", message)
+                self.assertNotIn("198.51.100.20", message)
+                self.assertNotIn("203.0.113.20", message)
+
+    def test_medium_burst_notification_includes_attacker_ip_when_ai_reports_none(self):
+        self.analyze.side_effect = None
+        self.analyze.return_value = AnalysisResult(Severity.NONE, "正常")
+        (self.root / "access.log").write_text(
+            '203.0.113.20 - - [11/Sep/2026:08:00:00 +0900] "GET / HTTP/1.1" 200 0\n'
+            + '198.51.100.10 - - [11/Sep/2026:08:00:01 +0900] "GET /.env HTTP/1.1" 404 0\n' * 10
+        )
+        self.assertTrue(run_once(self.config).notified)
+        message = self.post.call_args.args[2]["text"]
+        self.assertIn("危険度 中", message)
+        self.assertIn("攻撃元IP（検知根拠）: 198.51.100.10", message)
+        self.assertNotIn("203.0.113.20", message)
 
     def test_normal_is_not_queued_and_low_is_daily(self):
         self.analyze.side_effect = None

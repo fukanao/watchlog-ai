@@ -170,6 +170,12 @@ def merge_results(results: List[AnalysisResult]) -> AnalysisResult:
             ),
             20,
         ),
+        source_ips=list(dict.fromkeys(
+            ip
+            for result in results
+            if result.severity != Severity.NONE
+            for ip in result.source_ips
+        )),
     )
 
 
